@@ -1,0 +1,48 @@
+version: '3.8'
+name : "te rog"
+services:
+  mysql-db:
+    image: mysql:8.0
+    container_name: mysql-container-2
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: device_management
+    ports:
+      - "3309:3306"
+    volumes:
+      - device_data:/var/lib/mysql
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  spring-app-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spring-app-container2
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      DB_IP: mysql-db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_DBNAME: device_management
+      PORT: 8081
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  device_data:
