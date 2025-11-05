@@ -1,0 +1,234 @@
+version: "3.8"
+
+services:
+  # -----------------------------
+  # Traefik Reverse Proxy
+  # -----------------------------
+  traefik:
+    image: traefik:v3.5.0
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8082:8080" # dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - my-network
+    labels:
+      - "traefik.enable=true"
+      
+      # Admin-only middleware (only used by frontend)
+      - "traefik.http.middlewares.admin-auth.forwardauth.address=http://authorization:8083/api/test/admin"
+      - "traefik.http.middlewares.admin-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.admin-auth.forwardauth.authResponseHeaders=X-User-Id,X-User-Role"
+      - "traefik.http.middlewares.admin-auth.forwardauth.authRequestHeaders=Cookie,Authorization"
+      
+      # Any authenticated user middleware (only used by frontend)
+      - "traefik.http.middlewares.user-auth.forwardauth.address=http://authorization:8083/api/test/user"
+      - "traefik.http.middlewares.user-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.user-auth.forwardauth.authResponseHeaders=X-User-Id,X-User-Role"
+      - "traefik.http.middlewares.user-auth.forwardauth.authRequestHeaders=Cookie,Authorization"
+
+  # -----------------------------
+  # Frontend
+  # -----------------------------
+  frontend:
+   image: fronttest
+   container_name: frontend
+   labels:
+    - "traefik.enable=true"
+    - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+    
+    # Protected routes - (Admin only)
+    - "traefik.http.routers.frontend-protected.rule=Host(`frontend.localhost`) && (Path(`/add-user`) || Path(`/add-device`))"
+    - "traefik.http.routers.frontend-protected.entrypoints=web"
+    - "traefik.http.routers.frontend-protected.middlewares=admin-auth@docker"  
+    - "traefik.http.routers.frontend-protected.service=frontend"
+    
+    # General route - (No authentication)
+    - "traefik.http.routers.frontend.rule=Host(`frontend.localhost`)"
+    - "traefik.http.routers.frontend.entrypoints=web"
+    - "traefik.http.routers.frontend.service=frontend"
+   networks:
+    - my-network
+
+  # -----------------------------
+  # Backend 1 + Database (MySQL 8.0)
+  # -----------------------------
+  device_management-db:
+    image: mysql:8.0.40
+    container_name: mysql-device
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: device_management
+    ports:
+      - "3309:3306"
+    volumes:
+      - device_data:/var/lib/mysql
+    networks:
+      - my-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  device_management-app:
+    build:
+      context: ./device_management_test/demo
+      dockerfile: Dockerfile
+    container_name: device-management-app
+    restart: always
+    environment:
+      DB_IP: device_management-db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_DBNAME: device_management
+      PORT: 8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      device_management-db:
+        condition: service_healthy
+    networks:
+      - my-network
+    labels:
+    - "traefik.enable=true"
+    - "traefik.http.services.device.loadbalancer.server.port=8081"
+    
+    # Allow OPTIONS without auth (CORS preflight)
+    - "traefik.http.routers.device-options.rule=Host(`device.localhost`) && Method(`OPTIONS`)"
+    - "traefik.http.routers.device-options.entrypoints=web"
+    - "traefik.http.routers.device-options.service=device"
+    
+    # GET requests - any authenticated user (will filter in backend)
+    - "traefik.http.routers.device-get.rule=Host(`device.localhost`) && Method(`GET`)"
+    - "traefik.http.routers.device-get.entrypoints=web"
+    - "traefik.http.routers.device-get.middlewares=user-auth@docker"
+    - "traefik.http.routers.device-get.service=device"
+    
+    # POST, PUT, DELETE - admin only
+    - "traefik.http.routers.device-admin.rule=Host(`device.localhost`) && (Method(`POST`) || Method(`PUT`) || Method(`DELETE`))"
+    - "traefik.http.routers.device-admin.entrypoints=web"
+    - "traefik.http.routers.device-admin.middlewares=admin-auth@docker"
+    - "traefik.http.routers.device-admin.service=device"
+
+
+  # -----------------------------
+  # Backend 2 + Database (MySQL 8.1)
+  # -----------------------------
+  user_management-db:
+    image: mysql:8.1.0
+    container_name: mysql-user
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: user_management
+    ports:
+      - "3307:3306"
+    volumes:
+      - user_data:/var/lib/mysql
+    networks:
+      - my-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  user_management-app:
+    build:
+      context: ./user_management_test/demo
+      dockerfile: Dockerfile
+    container_name: user-management-app
+    restart: always
+    environment:
+      DB_IP: user_management-db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_DBNAME: user_management
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      user_management-db:
+        condition: service_healthy
+    networks:
+      - my-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.user.loadbalancer.server.port=8080"
+
+      # Public routes (OPTIONS only - anyone can read)
+      - "traefik.http.routers.user-public.rule=Host(`user.localhost`) &&  Method(`OPTIONS`)"
+      - "traefik.http.routers.user-public.entrypoints=web"
+      - "traefik.http.routers.user-public.service=user"
+
+      # Protected routes (GET, POST, PUT, DELETE - admin only)
+      - "traefik.http.routers.user-protected.rule=Host(`user.localhost`) && (Method(`POST`) || Method(`PUT`) || Method(`DELETE`) || Method(`GET`))"
+      - "traefik.http.routers.user-protected.middlewares=admin-auth@docker"
+      - "traefik.http.routers.user-protected.entrypoints=web"
+      - "traefik.http.routers.user-protected.service=user"
+
+  # -----------------------------
+  # Backend 3 (Authorization) + Database (MySQL 8.1)
+  # -----------------------------
+  auth_management-db:
+    image: mysql:8.1.0
+    container_name: mysql-auth
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: auth_management
+    ports:
+      - "3308:3306"
+    volumes:
+      - auth_data:/var/lib/mysql
+    networks:
+      - my-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  authorization:
+    build:
+      context: ./authorization_microservice/authentification
+      dockerfile: Dockerfile
+    container_name: authorization
+    restart: always
+    environment:
+      DB_IP: auth_management-db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_DBNAME: auth_management
+      PORT: 8083
+    ports:
+      - "8083:8083"
+    depends_on:
+      auth_management-db:
+        condition: service_healthy
+    networks:
+      - my-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=Host(`auth.localhost`)"
+      - "traefik.http.services.auth.loadbalancer.server.port=8083"
+
+# -----------------------------
+# Networks & Volumes
+# -----------------------------
+networks:
+  my-network:
+    driver: bridge
+
+volumes:
+  user_data:
+  device_data:
+  auth_data:
