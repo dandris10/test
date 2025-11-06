@@ -42,6 +42,7 @@ services:
    labels:
     - "traefik.enable=true"
     - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+    #- "traefik.http.routers.frontend-protected.rule=Host(`frontend.localhost`)"
     
     # Protected routes - (Admin only)
     - "traefik.http.routers.frontend-protected.rule=Host(`frontend.localhost`) && (Path(`/add-user`) || Path(`/add-device`))"
@@ -163,6 +164,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.user.loadbalancer.server.port=8080"
+      - "traefik.http.routers.user-public.rule=Host(`user.localhost`)"
 
       # Public routes (OPTIONS only - anyone can read)
       - "traefik.http.routers.user-public.rule=Host(`user.localhost`) &&  Method(`OPTIONS`)"
